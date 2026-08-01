@@ -1,0 +1,2 @@
+import type { MetadataRoute } from "next";
+export default function manifest(): MetadataRoute.Manifest { return { name: "클립착 - 영상 링크 저장 도구", short_name: "클립착", description: "공개 영상 링크를 플랫폼별로 확인하는 간단한 도구", start_url: "/", display: "standalone", background_color: "#f4f0e7", theme_color: "#1647ff", lang: "ko-KR", icons: [{ src: "/favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }] }; }

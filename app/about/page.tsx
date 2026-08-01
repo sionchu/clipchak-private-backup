@@ -1,0 +1,2 @@
+export const metadata = { title: "서비스 소개" };
+export default function AboutPage() { return <main className="info-page"><article className="prose shell"><span className="overline">ABOUT CLIPCHAK</span><h1>필요한 링크만, 짧게 처리합니다.</h1><p>클립착은 공개 영상 링크를 플랫폼별로 구분하고 사용 가능한 저장 방식을 안내하는 도구입니다. 회원가입과 복잡한 설정을 줄이고 휴대폰에서도 바로 사용할 수 있는 경험을 목표로 합니다.</p><h2>지원 원칙</h2><p>비공개 콘텐츠, 로그인 우회, 유료 강의, 저작권 보호 장치 우회는 지원하지 않습니다. 사용자는 자신이 소유하거나 저장 허가를 받은 콘텐츠에만 서비스를 사용해야 합니다.</p></article></main>; }
