@@ -6,6 +6,7 @@ const endpoint = "https://clipchak-direct-resolver.example/";
 
 test("allows an origin CDN URL", () => {
   assert.equal(isDirectOriginUrl("https://cdn.example.net/video/file.mp4?token=abc", endpoint), true);
+  assert.equal(isDirectOriginUrl("https://scontent.example.net/gallery/photo-01.jpg?token=abc", endpoint), true);
 });
 
 test("blocks resolver-origin and tunnel or proxy URLs", () => {

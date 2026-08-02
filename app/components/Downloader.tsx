@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Platform previews must stay CDN-direct; Next image optimization would proxy media bytes through ClipChak. */
+
 import { FormEvent, useMemo, useState } from "react";
 import { detectPlatform, getPlatform, type Platform } from "../lib/platforms";
 import { VideoCompressor } from "./VideoCompressor";
@@ -29,9 +31,11 @@ export function Downloader({ selected }: { selected?: Platform }) {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"error" | "success">("error");
   const [result, setResult] = useState<ResolveResult | null>(null);
   const [qualityFilter, setQualityFilter] = useState("all");
   const [soundFilter, setSoundFilter] = useState("all");
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
   const detected = useMemo(() => detectPlatform(url), [url]);
   const items = useMemo(() => result?.items || [], [result?.items]);
   const qualities = useMemo(() => Array.from(new Set(items.filter((item) => item.kind !== "audio" && item.quality).map((item) => item.quality as string))).sort((a, b) => Number(b.replace(/\D/g, "")) - Number(a.replace(/\D/g, ""))), [items]);
@@ -41,12 +45,15 @@ export function Downloader({ selected }: { selected?: Platform }) {
     if (soundFilter === "without" && item.hasAudio !== false) return false;
     return true;
   });
+  const imageItems = items.filter((item) => item.kind === "image");
+  const activeImage = imageItems[activeImageIndex] || imageItems[0];
 
   const paste = async () => {
     try {
       const text = await navigator.clipboard.readText();
       if (text) setUrl(text.trim());
     } catch {
+      setMessageTone("error");
       setMessage("주소창이나 공유 메뉴에서 복사한 링크를 직접 붙여넣어 주세요.");
     }
   };
@@ -54,9 +61,11 @@ export function Downloader({ selected }: { selected?: Platform }) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setMessage("");
+    setMessageTone("error");
     setResult(null);
     setQualityFilter("all");
     setSoundFilter("all");
+    setActiveImageIndex(0);
     let parsed: URL;
     try { parsed = new URL(url.trim()); } catch { setMessage("https://로 시작하는 올바른 게시물 주소를 입력해 주세요."); return; }
     if (!/^https?:$/.test(parsed.protocol)) { setMessage("웹 주소만 확인할 수 있습니다."); return; }
@@ -71,6 +80,33 @@ export function Downloader({ selected }: { selected?: Platform }) {
     } finally { setLoading(false); }
   };
 
+  const shareItem = async (item: MediaItem) => {
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: item.label, text: "클립착에서 확인한 공개 미디어 링크", url: item.url });
+        return;
+      }
+      await navigator.clipboard.writeText(item.url);
+      setMessageTone("success");
+      setMessage("미디어 링크를 복사했습니다.");
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setMessageTone("error");
+      setMessage("공유하지 못했습니다. ‘열어 저장’으로 원본을 연 뒤 기기의 공유 메뉴를 이용해 주세요.");
+    }
+  };
+
+  const copyImageLinks = async () => {
+    try {
+      await navigator.clipboard.writeText(imageItems.map((item) => item.url).join("\n"));
+      setMessageTone("success");
+      setMessage(`사진 ${imageItems.length}장의 원본 링크를 복사했습니다.`);
+    } catch {
+      setMessageTone("error");
+      setMessage("사진 링크를 복사하지 못했습니다. 사진별 공유 버튼을 이용해 주세요.");
+    }
+  };
+
   const current = detected || (result?.platform ? getPlatformByKey(result.platform) : undefined) || selected;
   return <div className="download-console">
     <div className="console-top"><span>URL INPUT</span><span className="status-dot"><i /> 공개 링크만</span></div>
@@ -81,12 +117,30 @@ export function Downloader({ selected }: { selected?: Platform }) {
       <button className="analyze-button" type="submit" disabled={loading || !url.trim()}>{loading ? "링크 확인 중…" : "영상·사진 링크 확인"}<b aria-hidden="true">↗</b></button>
       <p className="rights-note">계속하면 본인이 소유했거나 저장 허가를 받은 공개 콘텐츠임을 확인합니다.</p>
     </form>
-    {message && <p className="console-message error" role="alert">{message}</p>}
+    {message && <p className={`console-message ${messageTone}`} role={messageTone === "error" ? "alert" : "status"}>{message}</p>}
     {result && <div className={`resolve-result ${result.items?.length ? "ready" : "pending"}`} aria-live="polite">
       <span>{result.items?.length ? "저장 옵션" : "링크 확인 완료"}</span><h3>{result.title || `${current?.name || "미디어"} 공개 링크`}</h3><p>{result.message}</p>
       {!!result.items?.length && <>
-        <p className="delivery-note">{result.items.some((item) => item.delivery === "resolver") ? "유튜브·쇼츠는 접근 금지를 막기 위해 제한 중계하고, 다른 플랫폼은 원본 CDN에서 사용자 기기로 직접 연결합니다." : "원본 링크는 클립착 서버를 거치지 않고 이 브라우저에서 직접 열립니다. 새 화면이 열리면 기기의 저장 메뉴를 이용하세요."}</p>
+        <p className="delivery-note">{result.items.some((item) => item.delivery === "resolver") ? "유튜브·쇼츠만 접근 제한 때문에 제한 중계하고, 다른 플랫폼의 영상·사진은 원본 CDN에서 사용자 기기로 직접 연결합니다." : "영상·사진 원본은 클립착 서버를 거치지 않고 이 브라우저에서 직접 열립니다. 새 화면이 열리면 기기의 저장 또는 공유 메뉴를 이용하세요."}</p>
         {result.platform === "youtube" && <p className="youtube-direct-warning"><b>유튜브·쇼츠 실사용 모드</b> 소리를 합친 MP4를 최대 720p·10분·150MB까지 준비합니다. 동시 1건으로 제한해 서버 트래픽과 비용 폭주를 막습니다.</p>}
+        {imageItems.length > 1 && activeImage && <section className="image-gallery" aria-label={`게시물 사진 ${imageItems.length}장`}>
+          <div className="image-gallery-head">
+            <span><b>{activeImageIndex + 1}</b> / {imageItems.length} 사진 미리보기</span>
+            <button type="button" onClick={copyImageLinks}>전체 링크 복사</button>
+          </div>
+          <a className="image-gallery-preview" href={activeImage.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">
+            <img src={activeImage.url} alt={`${activeImage.label} 미리보기`} referrerPolicy="no-referrer" />
+            <span>원본 열어 저장 ↗</span>
+          </a>
+          <div className="image-gallery-controls">
+            <button type="button" onClick={() => setActiveImageIndex((activeImageIndex - 1 + imageItems.length) % imageItems.length)} aria-label="이전 사진">← 이전</button>
+            <div className="image-gallery-dots" aria-label="사진 선택">
+              {imageItems.map((item, index) => <button type="button" className={index === activeImageIndex ? "active" : ""} onClick={() => setActiveImageIndex(index)} aria-label={`${index + 1}번 사진`} aria-current={index === activeImageIndex ? "true" : undefined} key={`${item.url}-gallery`} />)}
+            </div>
+            <button type="button" onClick={() => setActiveImageIndex((activeImageIndex + 1) % imageItems.length)} aria-label="다음 사진">다음 →</button>
+          </div>
+          <small>모바일 웹은 외부 CDN 사진 여러 장의 강제 일괄 저장을 막을 수 있어, 원본을 차례로 열어 기기의 저장 메뉴를 사용합니다.</small>
+        </section>}
         <div className="media-filters">
           <label><span>해상도</span><select value={qualityFilter} onChange={(event) => setQualityFilter(event.target.value)}><option value="all">모든 해상도</option>{qualities.map((quality) => <option value={quality} key={quality}>{quality}</option>)}</select></label>
           <label><span>소리</span><select value={soundFilter} onChange={(event) => setSoundFilter(event.target.value)}><option value="all">전체</option><option value="with">소리 있음</option><option value="without">소리 없음</option></select></label>
@@ -95,7 +149,7 @@ export function Downloader({ selected }: { selected?: Platform }) {
         <div className="media-options">{visibleItems.map((item, index) => {
           const kind = item.kind || "video";
           const preview = item.thumbnail || (kind === "image" ? item.url : undefined);
-          return <a href={item.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" key={`${item.url}-${item.label}-${index}`}>
+          return <article className="media-option" key={`${item.url}-${item.label}-${index}`}>
             {preview && <img src={preview} alt="" loading="lazy" referrerPolicy="no-referrer" />}
             <span><i className={`media-kind ${kind}`}>{kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"}</i>{item.label}</span>
             <div className="media-badges">
@@ -103,8 +157,9 @@ export function Downloader({ selected }: { selected?: Platform }) {
               {!!item.filesize && <i>{item.filesizeApprox ? "약 " : ""}{formatBytes(item.filesize)}</i>}
               {item.width && item.height && <i>{item.width}×{item.height}{item.fps ? ` · ${item.fps}fps` : ""}</i>}
             </div>
-            <small>{[item.quality, item.format, item.videoCodec, item.audioCodec, item.delivery === "resolver" ? "클립착 제한 중계" : "원본 직접 연결"].filter(Boolean).join(" · ")}</small><b>{item.delivery === "resolver" ? "준비해서 저장 ↓" : "열어 저장 ↗"}</b>
-          </a>;
+            <small>{[item.quality, item.format, item.videoCodec, item.audioCodec, item.delivery === "resolver" ? "클립착 제한 중계" : "원본 직접 연결"].filter(Boolean).join(" · ")}</small>
+            <div className="media-option-actions"><button type="button" onClick={() => shareItem(item)}>공유</button><a href={item.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{item.delivery === "resolver" ? "준비해서 저장 ↓" : "열어 저장 ↗"}</a></div>
+          </article>;
         })}</div>
         {!visibleItems.length && <p className="no-media-filter">선택한 조건에 맞는 저장 옵션이 없습니다.</p>}
       </>}
