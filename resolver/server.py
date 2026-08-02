@@ -155,6 +155,8 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]]]:
         "1",
         "--retries",
         "1",
+        "--js-runtimes",
+        "node",
         "--no-warnings",
         source_url,
     ])
