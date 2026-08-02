@@ -102,6 +102,15 @@ def run_command(arguments: list[str]) -> subprocess.CompletedProcess[str] | None
         return None
 
 
+def log_tool_failure(tool: str, completed: subprocess.CompletedProcess[str] | None, source_url: str) -> None:
+    if completed is None:
+        print(f"{tool} failed: unavailable or timed out", file=sys.stderr, flush=True)
+        return
+    detail = (completed.stderr or completed.stdout or "").replace(source_url, "[url]")
+    detail = " ".join(detail.split())[-1200:]
+    print(f"{tool} failed ({completed.returncode}): {detail or 'no diagnostic output'}", file=sys.stderr, flush=True)
+
+
 def gallery_items(source_url: str) -> list[dict[str, str]]:
     completed = run_command([
         sys.executable,
@@ -157,10 +166,13 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]]]:
         "1",
         "--js-runtimes",
         "node",
-        "--no-warnings",
         source_url,
     ])
-    if not completed or completed.returncode != 0 or len(completed.stdout) > 8_000_000:
+    if not completed or completed.returncode != 0:
+        log_tool_failure("yt-dlp", completed, source_url)
+        return None, []
+    if len(completed.stdout) > 8_000_000:
+        print("yt-dlp failed: metadata response too large", file=sys.stderr, flush=True)
         return None, []
     try:
         data = json.loads(completed.stdout)

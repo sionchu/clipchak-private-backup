@@ -10,8 +10,10 @@ ENV HOME=/tmp \
 
 WORKDIR /app
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+RUN node --version
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m yt_dlp --version
 COPY server.py ./
 
 USER 65532:65532
