@@ -4,7 +4,7 @@
 
 ## 특징
 
-- 13개 플랫폼 키와 허용 도메인 화이트리스트
+- 운영 검증을 통과한 8개 플랫폼 키와 허용 도메인 화이트리스트
 - yt-dlp + gallery-dl + Open Graph 순차 분석
 - Bearer 인증과 메모리 기반 요청 제한
 - 최대 30개 결과, 짧은 프로세스 타임아웃
@@ -22,8 +22,8 @@ python server.py
 
 ```json
 {
-  "url": "https://www.tiktok.com/@owner/video/123",
-  "platform": "tiktok",
+  "url": "https://www.instagram.com/reel/example",
+  "platform": "instagram",
   "media": ["video", "image"],
   "mode": "metadata-only",
   "allowProxy": false

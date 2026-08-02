@@ -21,7 +21,6 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4096
 
 ALLOWED_DOMAINS = {
-    "tiktok.com": "tiktok",
     "threads.com": "threads",
     "threads.net": "threads",
     "linkedin.com": "linkedin",
@@ -32,19 +31,12 @@ ALLOWED_DOMAINS = {
     "t.co": "x",
     "facebook.com": "facebook",
     "fb.watch": "facebook",
-    "reddit.com": "reddit",
-    "redd.it": "reddit",
-    "v.redd.it": "reddit",
     "pinterest.com": "pinterest",
     "pin.it": "pinterest",
     "tv.naver.com": "naver",
-    "vimeo.com": "vimeo",
-    "dailymotion.com": "dailymotion",
-    "dai.ly": "dailymotion",
-    "twitch.tv": "twitch",
     "bsky.app": "bluesky",
 }
-GALLERY_PLATFORMS = {"tiktok", "threads", "instagram", "x", "facebook", "reddit", "pinterest", "bluesky"}
+GALLERY_PLATFORMS = {"threads", "instagram", "x", "facebook", "pinterest", "bluesky"}
 VIDEO_EXTENSIONS = {"mp4", "webm", "mov", "m4v"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 BLOCKED_RESULT_SEGMENTS = {"tunnel", "proxy"}

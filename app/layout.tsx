@@ -19,7 +19,7 @@ export const metadata: Metadata = {
     locale: "ko_KR",
     siteName: "클립착",
     title: "클립착 - 링크 붙여넣고 영상·사진 저장",
-    description: "틱톡·인스타그램·스레드·X·페이스북 등 주요 플랫폼의 공개 영상과 사진을 한곳에서 확인하세요.",
+    description: "인스타그램·스레드·링크드인·X·페이스북 등 검증된 플랫폼의 공개 영상과 사진을 한곳에서 확인하세요.",
     url: configuredUrl,
     images: [{ url: "/og.png", width: 1200, height: 630, alt: "클립착 영상·사진 링크 저장 도구" }],
   },

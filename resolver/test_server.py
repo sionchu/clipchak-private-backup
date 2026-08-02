@@ -14,10 +14,10 @@ from server import (  # noqa: E402
 
 class ResolverSecurityTests(unittest.TestCase):
     def test_platform_allowlist(self):
-        self.assertEqual(platform_for_url("https://www.tiktok.com/@owner/video/123"), "tiktok")
         self.assertEqual(platform_for_url("https://x.com/owner/status/123"), "x")
         self.assertEqual(platform_for_url("https://tv.naver.com/v/123"), "naver")
-        self.assertEqual(platform_for_url("https://clips.twitch.tv/TestClip"), "twitch")
+        self.assertIsNone(platform_for_url("https://www.tiktok.com/@owner/video/123"))
+        self.assertIsNone(platform_for_url("https://clips.twitch.tv/TestClip"))
         self.assertIsNone(platform_for_url("https://tiktok.com.attacker.example/watch/123"))
         self.assertIsNone(platform_for_url("https://www.youtube.com/shorts/abc"))
         self.assertIsNone(platform_for_url("file:///etc/passwd"))

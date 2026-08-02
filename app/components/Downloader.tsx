@@ -112,7 +112,7 @@ export function Downloader({ selected }: { selected?: Platform }) {
     <div className="console-top"><span>URL INPUT</span><span className="status-dot"><i /> 공개 링크만</span></div>
     <form onSubmit={submit}>
       <label htmlFor="media-url">영상·사진 게시물 주소</label>
-      <div className="url-field"><input id="media-url" type="url" inputMode="url" autoComplete="off" value={url} onChange={(event) => setUrl(event.target.value)} placeholder={selected?.placeholder || "틱톡·인스타·X·페이스북 등 공개 게시물 URL"} /><button type="button" className="paste-button" onClick={paste}>붙여넣기</button></div>
+      <div className="url-field"><input id="media-url" type="url" inputMode="url" autoComplete="off" value={url} onChange={(event) => setUrl(event.target.value)} placeholder={selected?.placeholder || "인스타·스레드·X·페이스북 등 공개 게시물 URL"} /><button type="button" className="paste-button" onClick={paste}>붙여넣기</button></div>
       <div className="detected-row"><span>{current ? <><b className={`mini-platform ${current.accent}`}>{current.short}</b>{current.name} 링크 {detected ? "인식됨" : "선택"}</> : "주소를 붙여넣으면 플랫폼을 자동으로 찾습니다."}</span><small>비공개·로그인 링크 제외</small></div>
       <button className="analyze-button" type="submit" disabled={loading || !url.trim()}>{loading ? "링크 확인 중…" : "영상·사진 링크 확인"}<b aria-hidden="true">↗</b></button>
       <p className="rights-note">계속하면 본인이 소유했거나 저장 허가를 받은 공개 콘텐츠임을 확인합니다.</p>

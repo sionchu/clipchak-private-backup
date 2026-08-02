@@ -4,11 +4,11 @@
 
 ## 지원 플랫폼
 
-- TikTok, Instagram, Threads, LinkedIn
-- X, Facebook, Reddit, Pinterest, Bluesky
-- 네이버TV, Vimeo, Dailymotion, Twitch 공개 클립
+- Instagram, Threads, LinkedIn
+- X, Facebook, Pinterest, Bluesky
+- 네이버TV
 
-공개 게시물이라도 플랫폼의 로그인 요구, 지역·연령 제한, 저장 금지 설정, 일시적인 차단 또는 원본 주소 정책에 따라 결과가 없을 수 있습니다.
+운영 환경에서 원본 영상·사진 바이트가 실제로 열린 플랫폼만 공개 목록에 표시합니다. TikTok, Reddit, Vimeo, Dailymotion, Twitch와 YouTube는 서버 중계·IP 결속 주소·분할 스트림 문제로 현재 공개 목록에서 제외했습니다.
 
 ## 개발
 
