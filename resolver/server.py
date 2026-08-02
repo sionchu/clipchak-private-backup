@@ -102,11 +102,23 @@ def run_command(arguments: list[str]) -> subprocess.CompletedProcess[str] | None
         return None
 
 
+def tool_failure_code(completed: subprocess.CompletedProcess[str] | None) -> str:
+    if completed is None:
+        return "extractor_timeout"
+    detail = f"{completed.stderr}\n{completed.stdout}".lower()
+    if "sign in to confirm you're not a bot" in detail or "sign in to confirm you’re not a bot" in detail:
+        return "upstream_verification_required"
+    return "extractor_failed"
+
+
 def log_tool_failure(tool: str, completed: subprocess.CompletedProcess[str] | None, source_url: str) -> None:
     if completed is None:
         print(f"{tool} failed: unavailable or timed out", file=sys.stderr, flush=True)
         return
     detail = (completed.stderr or completed.stdout or "").replace(source_url, "[url]")
+    if tool_failure_code(completed) == "upstream_verification_required":
+        print(f"{tool} failed ({completed.returncode}): upstream verification required", file=sys.stderr, flush=True)
+        return
     detail = " ".join(detail.split())[-1200:]
     print(f"{tool} failed ({completed.returncode}): {detail or 'no diagnostic output'}", file=sys.stderr, flush=True)
 
@@ -150,7 +162,7 @@ def gallery_items(source_url: str) -> list[dict[str, str]]:
     return items
 
 
-def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]]]:
+def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]], str | None]:
     completed = run_command([
         sys.executable,
         "-m",
@@ -170,14 +182,14 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]]]:
     ])
     if not completed or completed.returncode != 0:
         log_tool_failure("yt-dlp", completed, source_url)
-        return None, []
+        return None, [], tool_failure_code(completed)
     if len(completed.stdout) > 8_000_000:
         print("yt-dlp failed: metadata response too large", file=sys.stderr, flush=True)
-        return None, []
+        return None, [], "metadata_too_large"
     try:
         data = json.loads(completed.stdout)
     except (json.JSONDecodeError, TypeError):
-        return None, []
+        return None, [], "invalid_extractor_response"
 
     entries = [entry for entry in (data.get("entries") or [data]) if isinstance(entry, dict)]
     title = data.get("title") if isinstance(data.get("title"), str) else None
@@ -202,8 +214,8 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]]]:
                 "delivery": "direct",
             })
             if len(items) >= MAX_ITEMS:
-                return title, items
-    return title, items
+                return title, items, None
+    return title, items, None
 
 
 def progressive_candidates(entry: dict) -> list[dict]:
@@ -350,15 +362,22 @@ def resolve():
 
     title: str | None = None
     items: list[dict[str, str]] = []
+    extractor_error: str | None = None
     if platform in {"instagram", "tiktok", "threads"}:
         items = gallery_items(source_url)
     if not items:
-        title, items = yt_dlp_result(source_url)
+        title, items, extractor_error = yt_dlp_result(source_url)
     if not items:
         metadata_title, items = metadata_items(source_url)
         title = title or metadata_title
     if not items:
-        return jsonify({"title": title, "message": "direct media url unavailable", "items": []}), 404
+        status = 422 if extractor_error == "upstream_verification_required" else 404
+        return jsonify({
+            "title": title,
+            "code": extractor_error or "direct_media_unavailable",
+            "message": "direct media url unavailable",
+            "items": [],
+        }), status
 
     return jsonify({
         "title": title or "공개 게시물 미디어",

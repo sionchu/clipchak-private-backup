@@ -44,7 +44,13 @@ export async function POST(request: Request) {
       return await resolveWithCobalt(endpoint, url.href, platform.key);
     }
     const response = await resolverFetch(endpoint, { url: url.href, platform: platform.key, media: ["video", "image"], mode: "metadata-only", allowProxy: false });
-    if (!response.ok) return json({ platform: platform.key, message: response.status === 404 ? "공개 미디어를 찾지 못했습니다. 게시물 공개 여부와 주소를 확인해 주세요." : "현재 미디어 정보를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요." }, response.status === 404 ? 404 : 502);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({})) as { code?: string };
+      if (response.status === 422 && errorData.code === "upstream_verification_required") {
+        return json({ platform: platform.key, code: errorData.code, message: "원본 플랫폼이 현재 서버의 자동 분석 요청을 차단했습니다. 공개 링크라도 일시적으로 확인이 제한될 수 있습니다." }, 422);
+      }
+      return json({ platform: platform.key, code: errorData.code, message: response.status === 404 ? "공개 미디어를 찾지 못했습니다. 게시물 공개 여부와 주소를 확인해 주세요." : "현재 미디어 정보를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요." }, response.status === 404 ? 404 : 502);
+    }
     const data = await response.json() as { title?: string; items?: ResolverItem[] };
     const items = normalizeItems(data.items || [], endpoint);
     return json({ platform: platform.key, title: data.title || `${platform.name} 공개 미디어`, message: items.length ? "영상과 사진을 원본 주소에서 직접 열어 저장하세요." : "저장 가능한 공개 미디어를 찾지 못했습니다.", items });
