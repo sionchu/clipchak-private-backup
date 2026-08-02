@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isDirectOriginUrl } from "../app/lib/direct-media.ts";
+import { isDirectOriginUrl, isSignedResolverDownloadUrl } from "../app/lib/direct-media.ts";
 
 const endpoint = "https://clipchak-direct-resolver.example/";
 
@@ -18,4 +18,12 @@ test("blocks resolver-origin and tunnel or proxy URLs", () => {
 test("blocks malformed and non-http URLs", () => {
   assert.equal(isDirectOriginUrl("not-a-url", endpoint), false);
   assert.equal(isDirectOriginUrl("data:video/mp4;base64,AAAA", endpoint), false);
+});
+
+test("only allows signed resolver download routes for the YouTube relay", () => {
+  const ticket = "a".repeat(60);
+  assert.equal(isSignedResolverDownloadUrl(`${endpoint}download?ticket=${ticket}`, endpoint), true);
+  assert.equal(isSignedResolverDownloadUrl(`${endpoint}download?ticket=short`, endpoint), false);
+  assert.equal(isSignedResolverDownloadUrl(`${endpoint}proxy?ticket=${ticket}`, endpoint), false);
+  assert.equal(isSignedResolverDownloadUrl(`https://other.example/download?ticket=${ticket}`, endpoint), false);
 });

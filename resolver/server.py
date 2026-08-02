@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import html
 import json
 import os
+import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import deque
@@ -14,7 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 
 
 app = Flask(__name__)
@@ -35,8 +39,13 @@ IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 BLOCKED_RESULT_SEGMENTS = {"tunnel", "proxy"}
 MAX_ITEMS = 30
 PROCESS_TIMEOUT_SECONDS = 18
+YOUTUBE_RELAY_MAX_HEIGHT = 720
+YOUTUBE_RELAY_MAX_DURATION = 10 * 60
+YOUTUBE_RELAY_MAX_FILESIZE = 150 * 1024 * 1024
+YOUTUBE_RELAY_TICKET_TTL = 10 * 60
 rate_window: deque[float] = deque()
 rate_lock = threading.Lock()
+relay_lock = threading.BoundedSemaphore(value=1)
 
 
 def platform_for_url(value: str) -> str | None:
@@ -162,7 +171,7 @@ def gallery_items(source_url: str) -> list[dict[str, str]]:
     return items
 
 
-def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]], str | None]:
+def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, object]], str | None]:
     completed = run_command([
         sys.executable,
         "-m",
@@ -193,59 +202,228 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, str]], st
 
     entries = [entry for entry in (data.get("entries") or [data]) if isinstance(entry, dict)]
     title = data.get("title") if isinstance(data.get("title"), str) else None
-    items: list[dict[str, str]] = []
+    items: list[dict[str, object]] = []
     seen: set[str] = set()
     for entry in entries[:MAX_ITEMS]:
-        candidates = progressive_candidates(entry)
+        candidates = video_candidates(entry)
         for candidate in choose_qualities(candidates):
             value = candidate.get("url")
             if not isinstance(value, str) or value in seen or not direct_result_url(value):
                 continue
-            height = candidate.get("height")
+            height = safe_int(candidate.get("height"))
+            width = safe_int(candidate.get("width"))
+            fps = safe_float(candidate.get("fps"))
+            duration = safe_float(candidate.get("duration")) or safe_float(entry.get("duration"))
             extension = str(candidate.get("ext") or extension_of(value) or "").upper()
-            quality = f"{height}p" if isinstance(height, int) else None
+            quality = f"{height}p" if height else None
+            has_audio = str(candidate.get("acodec") or "none").lower() != "none"
+            file_size, approximate = candidate_file_size(candidate, duration)
+            sound_label = "소리 있음" if has_audio else "소리 없음"
             seen.add(value)
             items.append({
                 "url": value,
-                "label": " · ".join(filter(None, [quality, extension])) or f"영상 {len(items) + 1}",
+                "label": " · ".join(filter(None, [quality, extension, sound_label])) or f"영상 {len(items) + 1}",
                 "kind": "video",
                 "quality": quality,
                 "format": extension or None,
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "filesize": file_size,
+                "filesizeApprox": approximate,
+                "duration": duration,
+                "hasAudio": has_audio,
+                "videoCodec": clean_codec(candidate.get("vcodec")),
+                "audioCodec": clean_codec(candidate.get("acodec")),
+                "formatId": str(candidate.get("format_id") or "") or None,
                 "delivery": "direct",
             })
             if len(items) >= MAX_ITEMS:
                 return title, items, None
+
+        audio = best_audio_candidate(entry)
+        if audio:
+            value = audio.get("url")
+            if isinstance(value, str) and value not in seen and direct_result_url(value):
+                extension = str(audio.get("ext") or extension_of(value) or "").upper()
+                duration = safe_float(audio.get("duration")) or safe_float(entry.get("duration"))
+                file_size, approximate = candidate_file_size(audio, duration)
+                seen.add(value)
+                items.append({
+                    "url": value,
+                    "label": f"오디오 원본 · {extension or 'AUDIO'}",
+                    "kind": "audio",
+                    "format": extension or None,
+                    "filesize": file_size,
+                    "filesizeApprox": approximate,
+                    "duration": duration,
+                    "hasAudio": True,
+                    "audioCodec": clean_codec(audio.get("acodec")),
+                    "formatId": str(audio.get("format_id") or "") or None,
+                    "delivery": "direct",
+                })
+                if len(items) >= MAX_ITEMS:
+                    return title, items, None
     return title, items, None
 
 
-def progressive_candidates(entry: dict) -> list[dict]:
+def safe_int(value: object) -> int | None:
+    try:
+        number = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number > 0 else None
+
+
+def safe_float(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return round(number, 2) if number > 0 else None
+
+
+def clean_codec(value: object) -> str | None:
+    codec = str(value or "").strip()
+    return codec if codec and codec.lower() != "none" else None
+
+
+def candidate_file_size(candidate: dict, duration: float | None) -> tuple[int | None, bool]:
+    exact = safe_int(candidate.get("filesize"))
+    if exact:
+        return exact, False
+    approximate = safe_int(candidate.get("filesize_approx"))
+    if approximate:
+        return approximate, True
+    bitrate = safe_float(candidate.get("tbr"))
+    if bitrate and duration:
+        return int(bitrate * 1000 * duration / 8), True
+    return None, True
+
+
+def downloadable_format(item: dict) -> bool:
+    value = str(item.get("url") or "")
+    if not direct_result_url(value):
+        return False
+    protocol = str(item.get("protocol") or "").lower()
+    return "m3u8" not in protocol and "dash" not in protocol
+
+
+def video_candidates(entry: dict) -> list[dict]:
     formats = entry.get("formats") if isinstance(entry.get("formats"), list) else []
     candidates = []
     for item in formats:
-        if not isinstance(item, dict) or not direct_result_url(str(item.get("url") or "")):
+        if not isinstance(item, dict) or not downloadable_format(item):
             continue
-        protocol = str(item.get("protocol") or "").lower()
-        if "m3u8" in protocol or "dash" in protocol:
-            continue
-        if item.get("vcodec") in {None, "none"} or item.get("acodec") in {None, "none"}:
+        if str(item.get("vcodec") or "none").lower() == "none":
             continue
         candidates.append(item)
 
     if not candidates and direct_result_url(str(entry.get("url") or "")):
         candidates.append(entry)
-    return sorted(candidates, key=lambda item: (int(item.get("height") or 0), float(item.get("tbr") or 0)))
+    return sorted(candidates, key=candidate_rank)
+
+
+def candidate_rank(item: dict) -> tuple[int, int, int, float]:
+    height = safe_int(item.get("height")) or 0
+    has_audio = 1 if str(item.get("acodec") or "none").lower() != "none" else 0
+    preferred_container = 1 if str(item.get("ext") or "").lower() in {"mp4", "m4v"} else 0
+    bitrate = safe_float(item.get("tbr")) or 0
+    return height, has_audio, preferred_container, bitrate
+
+
+def best_audio_candidate(entry: dict) -> dict | None:
+    formats = entry.get("formats") if isinstance(entry.get("formats"), list) else []
+    candidates = [
+        item for item in formats
+        if isinstance(item, dict)
+        and downloadable_format(item)
+        and str(item.get("vcodec") or "none").lower() == "none"
+        and str(item.get("acodec") or "none").lower() != "none"
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (
+        1 if str(item.get("ext") or "").lower() in {"m4a", "mp4"} else 0,
+        safe_float(item.get("abr")) or safe_float(item.get("tbr")) or 0,
+    ))
 
 
 def choose_qualities(candidates: list[dict]) -> list[dict]:
     if not candidates:
         return []
     chosen: list[dict] = []
-    for target in (360, 720, 1080):
-        eligible = [item for item in candidates if int(item.get("height") or 0) <= target]
-        item = eligible[-1] if eligible else candidates[0]
+    for target in (360, 480, 720, 1080, 1440, 2160):
+        eligible = [item for item in candidates if (safe_int(item.get("height")) or 0) <= target]
+        item = max(eligible or candidates[:1], key=candidate_rank)
         if item not in chosen:
             chosen.append(item)
     return chosen
+
+
+def ticket_secret() -> bytes:
+    return os.environ.get("RESOLVER_TOKEN", "").encode("utf-8")
+
+
+def encode_ticket(payload: dict[str, object]) -> str:
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
+    signature = hmac.new(ticket_secret(), encoded, hashlib.sha256).digest()
+    return f"{encoded.decode('ascii')}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode('ascii')}"
+
+
+def decode_ticket(value: str) -> dict[str, object] | None:
+    try:
+        encoded, supplied_signature = value.split(".", 1)
+        expected = hmac.new(ticket_secret(), encoded.encode("ascii"), hashlib.sha256).digest()
+        padded_signature = supplied_signature + "=" * (-len(supplied_signature) % 4)
+        signature = base64.urlsafe_b64decode(padded_signature.encode("ascii"))
+        if not hmac.compare_digest(signature, expected):
+            return None
+        padded_payload = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded_payload.encode("ascii")))
+    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or safe_int(payload.get("exp")) is None:
+        return None
+    if int(payload["exp"]) < int(time.time()):
+        return None
+    return payload
+
+
+def youtube_relay_items(source_url: str, items: list[dict[str, object]]) -> list[dict[str, object]]:
+    audio_size = next((safe_int(item.get("filesize")) for item in items if item.get("kind") == "audio"), None)
+    candidates = [item for item in items if item.get("kind") == "video"]
+    output: list[dict[str, object]] = []
+    seen_heights: set[int] = set()
+    for item in candidates:
+        height = min(safe_int(item.get("height")) or 360, YOUTUBE_RELAY_MAX_HEIGHT)
+        duration = safe_float(item.get("duration"))
+        if height in seen_heights or (duration and duration > YOUTUBE_RELAY_MAX_DURATION):
+            continue
+        seen_heights.add(height)
+        video_size = safe_int(item.get("filesize"))
+        estimated_size = video_size if item.get("hasAudio") is True else (video_size + (audio_size or 0) if video_size else None)
+        ticket = encode_ticket({
+            "url": source_url,
+            "height": height,
+            "exp": int(time.time()) + YOUTUBE_RELAY_TICKET_TTL,
+            "nonce": secrets.token_urlsafe(8),
+        })
+        output.append({
+            **item,
+            "url": f"{request.url_root.rstrip('/')}/download?ticket={ticket}",
+            "label": f"{height}p · MP4 · 소리 있음",
+            "quality": f"{height}p",
+            "format": "MP4",
+            "height": height,
+            "filesize": estimated_size,
+            "filesizeApprox": True,
+            "hasAudio": True,
+            "audioCodec": item.get("audioCodec") or "AAC",
+            "delivery": "resolver",
+        })
+    return output
 
 
 class MetadataParser(HTMLParser):
@@ -336,13 +514,110 @@ def authorized() -> bool:
 def secure_headers(response):  # noqa: ANN001
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Resolver-Mode"] = "direct-only"
+    response.headers["X-Resolver-Mode"] = "hybrid-youtube-relay"
     return response
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "mode": "direct-only"})
+    return jsonify({"ok": True, "mode": "hybrid-youtube-relay", "youtubeMaxHeight": YOUTUBE_RELAY_MAX_HEIGHT})
+
+
+@app.get("/download")
+def download_youtube():
+    payload = decode_ticket(str(request.args.get("ticket") or ""))
+    if not payload:
+        return jsonify({"message": "download link expired or invalid"}), 401
+
+    source_url = str(payload.get("url") or "")
+    height = min(safe_int(payload.get("height")) or 360, YOUTUBE_RELAY_MAX_HEIGHT)
+    if platform_for_url(source_url) != "youtube":
+        return jsonify({"message": "unsupported download source"}), 400
+    if not relay_lock.acquire(blocking=False):
+        return jsonify({"message": "another YouTube download is running; retry shortly"}), 429
+
+    output_path = ""
+    try:
+        descriptor, output_path = tempfile.mkstemp(prefix="clipchak-youtube-", suffix=".mp4")
+        os.close(descriptor)
+        os.unlink(output_path)
+        format_selector = (
+            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
+            f"best[height<={height}][ext=mp4]/best[height<={height}]"
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "yt_dlp",
+                "--quiet",
+                "--no-warnings",
+                "--no-playlist",
+                "--socket-timeout",
+                "12",
+                "--extractor-retries",
+                "1",
+                "--retries",
+                "1",
+                "--fragment-retries",
+                "1",
+                "--js-runtimes",
+                "node",
+                "--max-filesize",
+                "150M",
+                "--merge-output-format",
+                "mp4",
+                "--format",
+                format_selector,
+                "--output",
+                output_path,
+                source_url,
+            ],
+            capture_output=True,
+            check=False,
+            timeout=240,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        if completed.returncode != 0 or not os.path.isfile(output_path):
+            detail = " ".join((completed.stderr or "").split())[-800:]
+            print(f"youtube relay failed ({completed.returncode}): {detail or 'no output'}", file=sys.stderr, flush=True)
+            if output_path and os.path.exists(output_path):
+                os.unlink(output_path)
+            relay_lock.release()
+            return jsonify({"message": "YouTube download could not be prepared"}), 502
+        if os.path.getsize(output_path) > YOUTUBE_RELAY_MAX_FILESIZE:
+            os.unlink(output_path)
+            relay_lock.release()
+            return jsonify({"message": "video exceeds the 150MB relay limit"}), 413
+
+        response = send_file(
+            output_path,
+            as_attachment=True,
+            download_name=f"clipchak-youtube-{height}p.mp4",
+            mimetype="video/mp4",
+            conditional=False,
+            max_age=0,
+        )
+
+        @response.call_on_close
+        def cleanup_download() -> None:
+            try:
+                if os.path.exists(output_path):
+                    os.unlink(output_path)
+            finally:
+                relay_lock.release()
+
+        return response
+    except subprocess.TimeoutExpired:
+        if output_path and os.path.exists(output_path):
+            os.unlink(output_path)
+        relay_lock.release()
+        return jsonify({"message": "YouTube download preparation timed out"}), 504
+    except OSError:
+        if output_path and os.path.exists(output_path):
+            os.unlink(output_path)
+        relay_lock.release()
+        return jsonify({"message": "download service unavailable"}), 503
 
 
 @app.post("/")
@@ -361,7 +636,7 @@ def resolve():
         return jsonify({"message": "unsupported url"}), 400
 
     title: str | None = None
-    items: list[dict[str, str]] = []
+    items: list[dict[str, object]] = []
     extractor_error: str | None = None
     if platform in {"instagram", "tiktok", "threads"}:
         items = gallery_items(source_url)
@@ -370,6 +645,8 @@ def resolve():
     if not items:
         metadata_title, items = metadata_items(source_url)
         title = title or metadata_title
+    if items and platform == "youtube":
+        items = youtube_relay_items(source_url, items)
     if not items:
         status = 422 if extractor_error == "upstream_verification_required" else 404
         return jsonify({

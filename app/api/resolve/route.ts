@@ -1,5 +1,5 @@
 import { detectPlatform } from "../../lib/platforms";
-import { isDirectOriginUrl } from "../../lib/direct-media";
+import { isDirectOriginUrl, isSignedResolverDownloadUrl } from "../../lib/direct-media";
 
 type MediaKind = "video" | "image" | "audio";
 type ResolverItem = {
@@ -10,6 +10,16 @@ type ResolverItem = {
   kind?: MediaKind;
   thumbnail?: string;
   delivery?: "direct" | "resolver";
+  width?: number;
+  height?: number;
+  fps?: number;
+  filesize?: number;
+  filesizeApprox?: boolean;
+  duration?: number;
+  hasAudio?: boolean;
+  videoCodec?: string;
+  audioCodec?: string;
+  formatId?: string;
 };
 
 type CobaltResponse = {
@@ -52,8 +62,8 @@ export async function POST(request: Request) {
       return json({ platform: platform.key, code: errorData.code, message: response.status === 404 ? "공개 미디어를 찾지 못했습니다. 게시물 공개 여부와 주소를 확인해 주세요." : "현재 미디어 정보를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요." }, response.status === 404 ? 404 : 502);
     }
     const data = await response.json() as { title?: string; items?: ResolverItem[] };
-    const items = normalizeItems(data.items || [], endpoint);
-    return json({ platform: platform.key, title: data.title || `${platform.name} 공개 미디어`, message: items.length ? "영상과 사진을 원본 주소에서 직접 열어 저장하세요." : "저장 가능한 공개 미디어를 찾지 못했습니다.", items });
+    const items = normalizeItems(data.items || [], endpoint, platform.key === "youtube");
+    return json({ platform: platform.key, title: data.title || `${platform.name} 공개 미디어`, message: items.length ? (platform.key === "youtube" ? "접근 금지를 막기 위해 소리를 합친 저장 파일을 제한 중계로 준비합니다." : "영상과 사진을 원본 주소에서 직접 열어 저장하세요.") : "저장 가능한 공개 미디어를 찾지 못했습니다.", items });
   } catch { return json({ platform: platform.key, message: "미디어 분석 서버에 연결하지 못했습니다." }, 502); }
 }
 
@@ -95,11 +105,13 @@ function resolverHeaders() {
   return { accept: "application/json", "content-type": "application/json", ...(token ? { authorization: `${scheme} ${token}` } : {}) };
 }
 
-function normalizeItems(items: ResolverItem[], endpoint?: string) {
+function normalizeItems(items: ResolverItem[], endpoint?: string, allowSignedRelay = false) {
   return items.flatMap((item, index) => {
-    if (typeof item.url !== "string" || item.delivery === "resolver" || !isDirectOriginUrl(item.url, endpoint)) return [];
+    if (typeof item.url !== "string") return [];
+    const signedRelay = allowSignedRelay && item.delivery === "resolver" && isSignedResolverDownloadUrl(item.url, endpoint);
+    if (!signedRelay && (item.delivery === "resolver" || !isDirectOriginUrl(item.url, endpoint))) return [];
     const kind = item.kind || inferKind(item.url) || inferKind(item.format || "") || "video";
-    return [{ ...item, label: item.label || `${kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"} ${index + 1}`, kind, delivery: "direct" as const }];
+    return [{ ...item, label: item.label || `${kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"} ${index + 1}`, kind, delivery: signedRelay ? "resolver" as const : "direct" as const }];
   }).slice(0, 30);
 }
 
