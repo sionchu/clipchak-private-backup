@@ -1,4 +1,5 @@
 import { detectPlatform } from "../../lib/platforms";
+import { isDirectOriginUrl } from "../../lib/direct-media";
 
 type MediaKind = "video" | "image" | "audio";
 type ResolverItem = {
@@ -42,45 +43,44 @@ export async function POST(request: Request) {
     if ((process.env.MEDIA_RESOLVER_DRIVER || "generic").toLowerCase() === "cobalt") {
       return await resolveWithCobalt(endpoint, url.href, platform.key);
     }
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: resolverHeaders(),
-      body: JSON.stringify({ url: url.href, platform: platform.key, media: ["video", "image"], mode: "metadata-only", allowProxy: false }),
-    });
+    const response = await resolverFetch(endpoint, { url: url.href, platform: platform.key, media: ["video", "image"], mode: "metadata-only", allowProxy: false });
     if (!response.ok) return json({ platform: platform.key, message: response.status === 404 ? "공개 미디어를 찾지 못했습니다. 게시물 공개 여부와 주소를 확인해 주세요." : "현재 미디어 정보를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요." }, response.status === 404 ? 404 : 502);
     const data = await response.json() as { title?: string; items?: ResolverItem[] };
-    const items = normalizeItems(data.items || []);
+    const items = normalizeItems(data.items || [], endpoint);
     return json({ platform: platform.key, title: data.title || `${platform.name} 공개 미디어`, message: items.length ? "영상과 사진을 원본 주소에서 직접 열어 저장하세요." : "저장 가능한 공개 미디어를 찾지 못했습니다.", items });
   } catch { return json({ platform: platform.key, message: "미디어 분석 서버에 연결하지 못했습니다." }, 502); }
 }
 
 async function resolveWithCobalt(endpoint: string, sourceUrl: string, platform: string) {
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: resolverHeaders(),
-    body: JSON.stringify({ url: sourceUrl, alwaysProxy: false, localProcessing: "disabled" }),
+  const response = await resolverFetch(endpoint, {
+    url: sourceUrl,
+    alwaysProxy: false,
+    localProcessing: "disabled",
+    disableMetadata: true,
+    videoQuality: "720",
+    youtubeVideoCodec: "h264",
+    youtubeVideoContainer: "mp4",
   });
   const data = await response.json() as CobaltResponse;
   if (!response.ok || data.status === "error") return json({ platform, message: `공개 미디어를 확인하지 못했습니다${data.error?.code ? ` (${data.error.code})` : ""}.` }, response.status === 404 ? 404 : 502);
 
   if (data.status === "redirect" && data.url) {
-    return json({ platform, title: "원본 미디어", message: "원본 서비스 주소로 직접 연결합니다.", items: normalizeItems([{ url: data.url, label: data.filename || "원본 미디어 열기", delivery: "direct" }]) });
+    const items = normalizeItems([{ url: data.url, label: data.filename || "원본 미디어 열기", delivery: "direct" }], endpoint);
+    if (!items.length) return directOnlyUnavailable(platform);
+    return json({ platform, title: "원본 미디어", message: "원본 서비스 주소로 직접 연결합니다.", items });
   }
   if (data.status === "picker") {
     const items = normalizeItems((data.picker || []).map((item, index) => ({
       url: item.url || "",
-      thumbnail: item.thumb,
+      thumbnail: item.thumb && isDirectOriginUrl(item.thumb, endpoint) ? item.thumb : undefined,
       label: `${item.type === "photo" ? "사진" : item.type === "gif" ? "GIF" : "영상"} ${index + 1}`,
       kind: item.type === "photo" ? "image" : "video",
       delivery: "direct",
-    })));
-    return json({ platform, title: "게시물 미디어", message: "여러 장 게시물을 항목별로 표시했습니다.", items });
+    })), endpoint);
+    if (!items.length) return directOnlyUnavailable(platform);
+    return json({ platform, title: "게시물 미디어", message: "여러 장 게시물을 원본 주소별로 표시했습니다.", items });
   }
-  if (data.status === "tunnel" && data.url) {
-    if (process.env.MEDIA_ALLOW_PROXY !== "true") return json({ platform, message: "이 게시물은 원본 직접 연결을 제공하지 않아 중계를 중단했습니다. 서버 트래픽을 쓰지 않는 설정이 적용되어 있습니다." }, 409);
-    return json({ platform, title: "외부 처리 미디어", message: "이 항목은 별도 미디어 서버를 통해 전송됩니다.", items: normalizeItems([{ url: data.url, label: data.filename || "처리된 미디어 열기", delivery: "resolver" }]) });
-  }
-  return json({ platform, message: "브라우저 직접 저장으로 처리할 수 없는 형식입니다." }, 409);
+  return directOnlyUnavailable(platform);
 }
 
 function resolverHeaders() {
@@ -89,14 +89,34 @@ function resolverHeaders() {
   return { accept: "application/json", "content-type": "application/json", ...(token ? { authorization: `${scheme} ${token}` } : {}) };
 }
 
-function normalizeItems(items: ResolverItem[]) {
+function normalizeItems(items: ResolverItem[], endpoint?: string) {
   return items.flatMap((item, index) => {
-    if (typeof item.url !== "string" || !/^https?:\/\//i.test(item.url)) return [];
-    const delivery = item.delivery === "resolver" ? "resolver" : "direct";
-    if (delivery === "resolver" && process.env.MEDIA_ALLOW_PROXY !== "true") return [];
+    if (typeof item.url !== "string" || item.delivery === "resolver" || !isDirectOriginUrl(item.url, endpoint)) return [];
     const kind = item.kind || inferKind(item.url) || inferKind(item.format || "") || "video";
-    return [{ ...item, label: item.label || `${kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"} ${index + 1}`, kind, delivery }];
+    return [{ ...item, label: item.label || `${kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"} ${index + 1}`, kind, delivery: "direct" as const }];
   }).slice(0, 30);
+}
+
+async function resolverFetch(endpoint: string, body: object) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    return await fetch(endpoint, {
+      method: "POST",
+      headers: resolverHeaders(),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function directOnlyUnavailable(platform: string) {
+  return json({
+    platform,
+    message: "이 게시물은 원본/CDN 직접 주소를 제공하지 않아 처리를 중단했습니다. 클립착은 서버 중계나 터널 다운로드를 사용하지 않습니다.",
+  }, 409);
 }
 
 function inferKind(value: string): MediaKind | undefined {

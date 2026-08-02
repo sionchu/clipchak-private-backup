@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: clipchak-direct-resolver-sionchu
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./resolver/Dockerfile
+    dockerContext: ./resolver
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: RESOLVER_TOKEN
+        sync: false
+      - key: RATE_LIMIT_MAX
+        value: "60"
+      - key: RATE_LIMIT_WINDOW
+        value: "60"
