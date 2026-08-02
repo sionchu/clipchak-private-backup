@@ -89,6 +89,13 @@ def extension_of(value: str) -> str:
 
 
 def media_kind(value: str, default: str = "video") -> str:
+    parsed = urlparse(value)
+    query = parsed.query.lower()
+    path = parsed.path.lower()
+    if "mime_type=video" in query or "/video/" in path:
+        return "video"
+    if "mime_type=audio" in query or "/audio/" in path:
+        return "audio"
     extension = extension_of(value)
     if extension in IMAGE_EXTENSIONS:
         return "image"
@@ -115,8 +122,27 @@ def tool_failure_code(completed: subprocess.CompletedProcess[str] | None) -> str
     if completed is None:
         return "extractor_timeout"
     detail = f"{completed.stderr}\n{completed.stdout}".lower()
-    if "sign in to confirm you're not a bot" in detail or "sign in to confirm you’re not a bot" in detail:
+    if any(message in detail for message in (
+        "sign in to confirm you're not a bot",
+        "sign in to confirm you’re not a bot",
+        "upstream verification required",
+        "po token",
+    )):
         return "upstream_verification_required"
+    if any(message in detail for message in (
+        "instagram sent an empty media response",
+        "redirect to login page",
+        "login required",
+        "cookies for the authentication",
+    )):
+        return "upstream_auth_required"
+    if any(message in detail for message in (
+        "video unavailable",
+        "this video is unavailable",
+        "private video",
+        "content is not available",
+    )):
+        return "media_unavailable"
     return "extractor_failed"
 
 
@@ -149,6 +175,7 @@ def gallery_items(source_url: str) -> list[dict[str, str]]:
         source_url,
     ])
     if not completed or completed.returncode != 0:
+        log_tool_failure("gallery-dl", completed, source_url)
         return []
 
     items: list[dict[str, str]] = []
@@ -179,6 +206,7 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, object]],
         "--dump-single-json",
         "--skip-download",
         "--no-playlist",
+        "--ignore-errors",
         "--socket-timeout",
         "8",
         "--extractor-retries",
@@ -189,7 +217,7 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, object]],
         "node",
         source_url,
     ])
-    if not completed or completed.returncode != 0:
+    if not completed:
         log_tool_failure("yt-dlp", completed, source_url)
         return None, [], tool_failure_code(completed)
     if len(completed.stdout) > 8_000_000:
@@ -198,6 +226,14 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, object]],
     try:
         data = json.loads(completed.stdout)
     except (json.JSONDecodeError, TypeError):
+        if completed.returncode != 0:
+            log_tool_failure("yt-dlp", completed, source_url)
+            return None, [], tool_failure_code(completed)
+        return None, [], "invalid_extractor_response"
+    if not isinstance(data, dict):
+        if completed.returncode != 0:
+            log_tool_failure("yt-dlp", completed, source_url)
+            return None, [], tool_failure_code(completed)
         return None, [], "invalid_extractor_response"
 
     entries = [entry for entry in (data.get("entries") or [data]) if isinstance(entry, dict)]
@@ -264,7 +300,12 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, object]],
                 })
                 if len(items) >= MAX_ITEMS:
                     return title, items, None
-    return title, items, None
+    if items:
+        return title, items, None
+    if completed.returncode != 0:
+        log_tool_failure("yt-dlp", completed, source_url)
+        return title, [], tool_failure_code(completed)
+    return title, [], None
 
 
 def safe_int(value: object) -> int | None:
@@ -648,7 +689,7 @@ def resolve():
     if items and platform == "youtube":
         items = youtube_relay_items(source_url, items)
     if not items:
-        status = 422 if extractor_error == "upstream_verification_required" else 404
+        status = 422 if extractor_error in {"upstream_verification_required", "upstream_auth_required"} else 404
         return jsonify({
             "title": title,
             "code": extractor_error or "direct_media_unavailable",

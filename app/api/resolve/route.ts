@@ -56,7 +56,7 @@ export async function POST(request: Request) {
     const response = await resolverFetch(endpoint, { url: url.href, platform: platform.key, media: ["video", "image"], mode: "metadata-only", allowProxy: false });
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({})) as { code?: string };
-      if (response.status === 422 && errorData.code === "upstream_verification_required") {
+      if (response.status === 422 && ["upstream_verification_required", "upstream_auth_required"].includes(errorData.code || "")) {
         return json({ platform: platform.key, code: errorData.code, message: "원본 플랫폼이 현재 서버의 자동 분석 요청을 차단했습니다. 공개 링크라도 일시적으로 확인이 제한될 수 있습니다." }, 422);
       }
       return json({ platform: platform.key, code: errorData.code, message: response.status === 404 ? "공개 미디어를 찾지 못했습니다. 게시물 공개 여부와 주소를 확인해 주세요." : "현재 미디어 정보를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요." }, response.status === 404 ? 404 : 502);
@@ -64,7 +64,10 @@ export async function POST(request: Request) {
     const data = await response.json() as { title?: string; items?: ResolverItem[] };
     const items = normalizeItems(data.items || [], endpoint, platform.key === "youtube");
     return json({ platform: platform.key, title: data.title || `${platform.name} 공개 미디어`, message: items.length ? (platform.key === "youtube" ? "접근 금지를 막기 위해 소리를 합친 저장 파일을 제한 중계로 준비합니다." : "영상과 사진을 원본 주소에서 직접 열어 저장하세요.") : "저장 가능한 공개 미디어를 찾지 못했습니다.", items });
-  } catch { return json({ platform: platform.key, message: "미디어 분석 서버에 연결하지 못했습니다." }, 502); }
+  } catch (reason) {
+    const timedOut = reason instanceof DOMException && reason.name === "AbortError";
+    return json({ platform: platform.key, code: timedOut ? "resolver_timeout" : "resolver_unavailable", message: timedOut ? "미디어 분석 시간이 초과됐습니다. 잠시 후 다시 시도해 주세요." : "미디어 분석 서버에 연결하지 못했습니다." }, timedOut ? 504 : 502);
+  }
 }
 
 async function resolveWithCobalt(endpoint: string, sourceUrl: string, platform: string) {
@@ -117,7 +120,7 @@ function normalizeItems(items: ResolverItem[], endpoint?: string, allowSignedRel
 
 async function resolverFetch(endpoint: string, body: object) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const timeout = setTimeout(() => controller.abort(), 40_000);
   try {
     return await fetch(endpoint, {
       method: "POST",

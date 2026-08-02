@@ -1,4 +1,5 @@
 import os
+import subprocess
 import time
 import unittest
 
@@ -8,7 +9,9 @@ from server import (  # noqa: E402
     app,
     decode_ticket,
     encode_ticket,
+    media_kind,
     platform_for_url,
+    tool_failure_code,
     youtube_relay_items,
 )
 
@@ -41,6 +44,18 @@ class ResolverSecurityTests(unittest.TestCase):
         self.assertTrue(all(item["delivery"] == "resolver" for item in output))
         self.assertTrue(all(item["hasAudio"] is True for item in output))
         self.assertTrue(all(str(item["url"]).startswith("https://resolver.example/download?ticket=") for item in output))
+
+    def test_tiktok_signed_video_url_is_not_misclassified_as_photo(self):
+        url = "https://v16-webapp-prime.tiktok.com/video/tos/file/?mime_type=video_mp4&signature=test"
+        self.assertEqual(media_kind(url, "image"), "video")
+
+    def test_known_upstream_failures_have_actionable_codes(self):
+        youtube = subprocess.CompletedProcess([], 1, "", "Sign in to confirm you're not a bot")
+        instagram = subprocess.CompletedProcess([], 1, "", "Instagram sent an empty media response")
+        unavailable = subprocess.CompletedProcess([], 1, "", "ERROR: Video unavailable")
+        self.assertEqual(tool_failure_code(youtube), "upstream_verification_required")
+        self.assertEqual(tool_failure_code(instagram), "upstream_auth_required")
+        self.assertEqual(tool_failure_code(unavailable), "media_unavailable")
 
 
 if __name__ == "__main__":
