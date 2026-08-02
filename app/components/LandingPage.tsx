@@ -4,7 +4,7 @@ import { platforms, type Platform } from "../lib/platforms";
 
 export function LandingPage({ platform }: { platform?: Platform }) {
   const title = platform?.title || "영상도 사진도,\n링크 하나로.";
-  const description = platform?.description || "유튜브 영상부터 틱톡 사진 슬라이드, 스레드·링크드인·인스타그램 게시물까지 공개 링크를 한곳에서 확인하세요.";
+  const description = platform?.description || "틱톡·인스타그램·스레드부터 X, 페이스북, 국내외 영상 플랫폼까지 공개 영상과 사진 링크를 한곳에서 확인하세요.";
   const faq = platform?.faq || [
     { q: "어떤 링크를 사용할 수 있나요?", a: "로그인 없이 열리는 공개 게시물과 직접 미디어 주소를 확인할 수 있습니다. 비공개 계정이나 유료 콘텐츠는 지원하지 않습니다." },
     { q: "영상·사진이 클립착 서버를 지나가나요?", a: "기본 모드는 분석 서버가 원본 주소만 찾고, 실제 파일은 플랫폼 CDN에서 사용자의 브라우저로 직접 연결합니다. 원본 직접 연결이 불가능한 게시물은 중계하지 않습니다." },

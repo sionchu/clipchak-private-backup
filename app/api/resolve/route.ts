@@ -1,5 +1,5 @@
 import { detectPlatform } from "../../lib/platforms";
-import { isDirectOriginUrl, isSignedResolverDownloadUrl } from "../../lib/direct-media";
+import { isDirectOriginUrl } from "../../lib/direct-media";
 
 type MediaKind = "video" | "image" | "audio";
 type ResolverItem = {
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
   }
 
   const platform = detectPlatform(url.href);
-  if (!platform) return json({ message: "현재 지원하는 플랫폼 주소가 아닙니다. 유튜브, 틱톡, 스레드, 링크드인, 인스타그램 링크를 확인해 주세요." }, 400);
+  if (!platform) return json({ message: "현재 지원하는 공개 미디어 플랫폼 주소가 아닙니다. 아래 플랫폼 목록에서 주소 형식을 확인해 주세요." }, 400);
 
   const endpoint = process.env.MEDIA_RESOLVER_ENDPOINT?.trim() || process.env.VIDEO_RESOLVER_ENDPOINT?.trim();
   if (!endpoint) return json({ platform: platform.key, title: `${platform.name} 공개 링크`, message: "주소 형식은 정상입니다. 미디어 분석 서버를 연결하면 영상·사진 저장 옵션이 이곳에 표시됩니다." }, 503);
@@ -62,8 +62,8 @@ export async function POST(request: Request) {
       return json({ platform: platform.key, code: errorData.code, message: response.status === 404 ? "공개 미디어를 찾지 못했습니다. 게시물 공개 여부와 주소를 확인해 주세요." : "현재 미디어 정보를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요." }, response.status === 404 ? 404 : 502);
     }
     const data = await response.json() as { title?: string; items?: ResolverItem[] };
-    const items = normalizeItems(data.items || [], endpoint, platform.key === "youtube");
-    return json({ platform: platform.key, title: data.title || `${platform.name} 공개 미디어`, message: items.length ? (platform.key === "youtube" ? "접근 금지를 막기 위해 소리를 합친 저장 파일을 제한 중계로 준비합니다." : "영상과 사진을 원본 주소에서 직접 열어 저장하세요.") : "저장 가능한 공개 미디어를 찾지 못했습니다.", items });
+    const items = normalizeItems(data.items || [], endpoint);
+    return json({ platform: platform.key, title: data.title || `${platform.name} 공개 미디어`, message: items.length ? "영상과 사진을 원본 주소에서 직접 열어 저장하세요." : "저장 가능한 공개 미디어를 찾지 못했습니다.", items });
   } catch (reason) {
     const timedOut = reason instanceof DOMException && reason.name === "AbortError";
     return json({ platform: platform.key, code: timedOut ? "resolver_timeout" : "resolver_unavailable", message: timedOut ? "미디어 분석 시간이 초과됐습니다. 잠시 후 다시 시도해 주세요." : "미디어 분석 서버에 연결하지 못했습니다." }, timedOut ? 504 : 502);
@@ -77,8 +77,6 @@ async function resolveWithCobalt(endpoint: string, sourceUrl: string, platform: 
     localProcessing: "disabled",
     disableMetadata: true,
     videoQuality: "720",
-    youtubeVideoCodec: "h264",
-    youtubeVideoContainer: "mp4",
   });
   const data = await response.json() as CobaltResponse;
   if (!response.ok || data.status === "error") return json({ platform, message: `공개 미디어를 확인하지 못했습니다${data.error?.code ? ` (${data.error.code})` : ""}.` }, response.status === 404 ? 404 : 502);
@@ -108,13 +106,12 @@ function resolverHeaders() {
   return { accept: "application/json", "content-type": "application/json", ...(token ? { authorization: `${scheme} ${token}` } : {}) };
 }
 
-function normalizeItems(items: ResolverItem[], endpoint?: string, allowSignedRelay = false) {
+function normalizeItems(items: ResolverItem[], endpoint?: string) {
   return items.flatMap((item, index) => {
     if (typeof item.url !== "string") return [];
-    const signedRelay = allowSignedRelay && item.delivery === "resolver" && isSignedResolverDownloadUrl(item.url, endpoint);
-    if (!signedRelay && (item.delivery === "resolver" || !isDirectOriginUrl(item.url, endpoint))) return [];
+    if (item.delivery === "resolver" || !isDirectOriginUrl(item.url, endpoint)) return [];
     const kind = item.kind || inferKind(item.url) || inferKind(item.format || "") || "video";
-    return [{ ...item, label: item.label || `${kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"} ${index + 1}`, kind, delivery: signedRelay ? "resolver" as const : "direct" as const }];
+    return [{ ...item, label: item.label || `${kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"} ${index + 1}`, kind, delivery: "direct" as const }];
   }).slice(0, 30);
 }
 
@@ -141,6 +138,9 @@ function directOnlyUnavailable(platform: string) {
 }
 
 function inferKind(value: string): MediaKind | undefined {
+  if (/[?&](?:mime_type|mime)=video(?:_|%2F)?/i.test(value)) return "video";
+  if (/[?&](?:mime_type|mime)=audio(?:_|%2F)?/i.test(value)) return "audio";
+  if (/[?&](?:mime_type|mime)=image(?:_|%2F)?/i.test(value)) return "image";
   if (/\.(jpg|jpeg|png|webp|gif|avif|heic)(?:$|[?#])/i.test(value)) return "image";
   if (/\.(mp3|m4a|aac|wav|ogg|opus)(?:$|[?#])/i.test(value)) return "audio";
   if (/\.(mp4|webm|mov|mkv|m4v)(?:$|[?#])/i.test(value)) return "video";

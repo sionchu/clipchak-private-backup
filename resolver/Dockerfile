@@ -1,5 +1,3 @@
-FROM node:22-slim AS node-runtime
-
 FROM python:3.12-slim
 
 ENV HOME=/tmp \
@@ -9,11 +7,6 @@ ENV HOME=/tmp \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
-COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-RUN node --version
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 RUN python -m yt_dlp --version

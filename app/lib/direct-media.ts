@@ -27,21 +27,3 @@ export function isDirectOriginUrl(value: string, resolverEndpoint?: string) {
 
   return true;
 }
-
-export function isSignedResolverDownloadUrl(value: string, resolverEndpoint?: string) {
-  if (!resolverEndpoint) return false;
-  try {
-    const target = new URL(value);
-    const resolver = new URL(resolverEndpoint);
-    return target.protocol === "https:"
-      && target.origin === resolver.origin
-      && target.pathname === "/download"
-      && target.searchParams.has("ticket")
-      && target.searchParams.get("ticket")!.length >= 40
-      && !target.username
-      && !target.password
-      && !target.hash;
-  } catch {
-    return false;
-  }
-}

@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- Platform previews must stay CDN-direct; Next image optimization would proxy media bytes through ClipChak. */
 
 import { FormEvent, useMemo, useState } from "react";
-import { detectPlatform, getPlatform, type Platform } from "../lib/platforms";
+import { detectPlatform, getPlatformByKey, type Platform } from "../lib/platforms";
 import { VideoCompressor } from "./VideoCompressor";
 
 type MediaItem = {
@@ -112,7 +112,7 @@ export function Downloader({ selected }: { selected?: Platform }) {
     <div className="console-top"><span>URL INPUT</span><span className="status-dot"><i /> 공개 링크만</span></div>
     <form onSubmit={submit}>
       <label htmlFor="media-url">영상·사진 게시물 주소</label>
-      <div className="url-field"><input id="media-url" type="url" inputMode="url" autoComplete="off" value={url} onChange={(event) => setUrl(event.target.value)} placeholder={selected?.placeholder || "유튜브·틱톡·스레드·링크드인·인스타 URL 붙여넣기"} /><button type="button" className="paste-button" onClick={paste}>붙여넣기</button></div>
+      <div className="url-field"><input id="media-url" type="url" inputMode="url" autoComplete="off" value={url} onChange={(event) => setUrl(event.target.value)} placeholder={selected?.placeholder || "틱톡·인스타·X·페이스북 등 공개 게시물 URL"} /><button type="button" className="paste-button" onClick={paste}>붙여넣기</button></div>
       <div className="detected-row"><span>{current ? <><b className={`mini-platform ${current.accent}`}>{current.short}</b>{current.name} 링크 {detected ? "인식됨" : "선택"}</> : "주소를 붙여넣으면 플랫폼을 자동으로 찾습니다."}</span><small>비공개·로그인 링크 제외</small></div>
       <button className="analyze-button" type="submit" disabled={loading || !url.trim()}>{loading ? "링크 확인 중…" : "영상·사진 링크 확인"}<b aria-hidden="true">↗</b></button>
       <p className="rights-note">계속하면 본인이 소유했거나 저장 허가를 받은 공개 콘텐츠임을 확인합니다.</p>
@@ -121,8 +121,7 @@ export function Downloader({ selected }: { selected?: Platform }) {
     {result && <div className={`resolve-result ${result.items?.length ? "ready" : "pending"}`} aria-live="polite">
       <span>{result.items?.length ? "저장 옵션" : "링크 확인 완료"}</span><h3>{result.title || `${current?.name || "미디어"} 공개 링크`}</h3><p>{result.message}</p>
       {!!result.items?.length && <>
-        <p className="delivery-note">{result.items.some((item) => item.delivery === "resolver") ? "유튜브·쇼츠만 접근 제한 때문에 제한 중계하고, 다른 플랫폼의 영상·사진은 원본 CDN에서 사용자 기기로 직접 연결합니다." : "영상·사진 원본은 클립착 서버를 거치지 않고 이 브라우저에서 직접 열립니다. 새 화면이 열리면 기기의 저장 또는 공유 메뉴를 이용하세요."}</p>
-        {result.platform === "youtube" && <p className="youtube-direct-warning"><b>유튜브·쇼츠 실사용 모드</b> 소리를 합친 MP4를 최대 720p·10분·150MB까지 준비합니다. 동시 1건으로 제한해 서버 트래픽과 비용 폭주를 막습니다.</p>}
+        <p className="delivery-note">영상·사진 원본은 클립착 서버를 거치지 않고 이 브라우저에서 직접 열립니다. 새 화면이 열리면 기기의 저장 또는 공유 메뉴를 이용하세요.</p>
         {imageItems.length > 1 && activeImage && <section className="image-gallery" aria-label={`게시물 사진 ${imageItems.length}장`}>
           <div className="image-gallery-head">
             <span><b>{activeImageIndex + 1}</b> / {imageItems.length} 사진 미리보기</span>
@@ -157,8 +156,8 @@ export function Downloader({ selected }: { selected?: Platform }) {
               {!!item.filesize && <i>{item.filesizeApprox ? "약 " : ""}{formatBytes(item.filesize)}</i>}
               {item.width && item.height && <i>{item.width}×{item.height}{item.fps ? ` · ${item.fps}fps` : ""}</i>}
             </div>
-            <small>{[item.quality, item.format, item.videoCodec, item.audioCodec, item.delivery === "resolver" ? "클립착 제한 중계" : "원본 직접 연결"].filter(Boolean).join(" · ")}</small>
-            <div className="media-option-actions"><button type="button" onClick={() => shareItem(item)}>공유</button><a href={item.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{item.delivery === "resolver" ? "준비해서 저장 ↓" : "열어 저장 ↗"}</a></div>
+            <small>{[item.quality, item.format, item.videoCodec, item.audioCodec, "원본 직접 연결"].filter(Boolean).join(" · ")}</small>
+            <div className="media-option-actions"><button type="button" onClick={() => shareItem(item)}>공유</button><a href={item.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">열어 저장 ↗</a></div>
           </article>;
         })}</div>
         {!visibleItems.length && <p className="no-media-filter">선택한 조건에 맞는 저장 옵션이 없습니다.</p>}
@@ -166,12 +165,6 @@ export function Downloader({ selected }: { selected?: Platform }) {
     </div>}
     {!!result?.items?.some((item) => item.kind === "video" || item.kind === "audio") && <VideoCompressor />}
   </div>;
-}
-
-function getPlatformByKey(key: string) {
-  return ["youtube", "tiktok", "threads", "linkedin", "instagram"].includes(key)
-    ? getPlatform(`${key}-video-download`)
-    : undefined;
 }
 
 function formatBytes(bytes: number) {

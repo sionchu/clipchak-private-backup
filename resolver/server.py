@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import hmac
 import html
 import json
 import os
-import secrets
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections import deque
@@ -18,34 +14,44 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request
 
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4096
 
 ALLOWED_DOMAINS = {
-    "youtube.com": "youtube",
-    "youtu.be": "youtube",
     "tiktok.com": "tiktok",
     "threads.com": "threads",
     "threads.net": "threads",
     "linkedin.com": "linkedin",
     "lnkd.in": "linkedin",
     "instagram.com": "instagram",
+    "x.com": "x",
+    "twitter.com": "x",
+    "t.co": "x",
+    "facebook.com": "facebook",
+    "fb.watch": "facebook",
+    "reddit.com": "reddit",
+    "redd.it": "reddit",
+    "v.redd.it": "reddit",
+    "pinterest.com": "pinterest",
+    "pin.it": "pinterest",
+    "tv.naver.com": "naver",
+    "vimeo.com": "vimeo",
+    "dailymotion.com": "dailymotion",
+    "dai.ly": "dailymotion",
+    "twitch.tv": "twitch",
+    "bsky.app": "bluesky",
 }
+GALLERY_PLATFORMS = {"tiktok", "threads", "instagram", "x", "facebook", "reddit", "pinterest", "bluesky"}
 VIDEO_EXTENSIONS = {"mp4", "webm", "mov", "m4v"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 BLOCKED_RESULT_SEGMENTS = {"tunnel", "proxy"}
 MAX_ITEMS = 30
 PROCESS_TIMEOUT_SECONDS = 18
-YOUTUBE_RELAY_MAX_HEIGHT = 720
-YOUTUBE_RELAY_MAX_DURATION = 10 * 60
-YOUTUBE_RELAY_MAX_FILESIZE = 150 * 1024 * 1024
-YOUTUBE_RELAY_TICKET_TTL = 10 * 60
 rate_window: deque[float] = deque()
 rate_lock = threading.Lock()
-relay_lock = threading.BoundedSemaphore(value=1)
 
 
 def platform_for_url(value: str) -> str | None:
@@ -127,6 +133,8 @@ def tool_failure_code(completed: subprocess.CompletedProcess[str] | None) -> str
         "sign in to confirm you’re not a bot",
         "upstream verification required",
         "po token",
+        "ip address is blocked",
+        "automated requests",
     )):
         return "upstream_verification_required"
     if any(message in detail for message in (
@@ -213,8 +221,6 @@ def yt_dlp_result(source_url: str) -> tuple[str | None, list[dict[str, object]],
         "1",
         "--retries",
         "1",
-        "--js-runtimes",
-        "node",
         source_url,
     ])
     if not completed:
@@ -402,71 +408,6 @@ def choose_qualities(candidates: list[dict]) -> list[dict]:
     return chosen
 
 
-def ticket_secret() -> bytes:
-    return os.environ.get("RESOLVER_TOKEN", "").encode("utf-8")
-
-
-def encode_ticket(payload: dict[str, object]) -> str:
-    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
-    signature = hmac.new(ticket_secret(), encoded, hashlib.sha256).digest()
-    return f"{encoded.decode('ascii')}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode('ascii')}"
-
-
-def decode_ticket(value: str) -> dict[str, object] | None:
-    try:
-        encoded, supplied_signature = value.split(".", 1)
-        expected = hmac.new(ticket_secret(), encoded.encode("ascii"), hashlib.sha256).digest()
-        padded_signature = supplied_signature + "=" * (-len(supplied_signature) % 4)
-        signature = base64.urlsafe_b64decode(padded_signature.encode("ascii"))
-        if not hmac.compare_digest(signature, expected):
-            return None
-        padded_payload = encoded + "=" * (-len(encoded) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded_payload.encode("ascii")))
-    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or safe_int(payload.get("exp")) is None:
-        return None
-    if int(payload["exp"]) < int(time.time()):
-        return None
-    return payload
-
-
-def youtube_relay_items(source_url: str, items: list[dict[str, object]]) -> list[dict[str, object]]:
-    audio_size = next((safe_int(item.get("filesize")) for item in items if item.get("kind") == "audio"), None)
-    candidates = [item for item in items if item.get("kind") == "video"]
-    output: list[dict[str, object]] = []
-    seen_heights: set[int] = set()
-    for item in candidates:
-        height = min(safe_int(item.get("height")) or 360, YOUTUBE_RELAY_MAX_HEIGHT)
-        duration = safe_float(item.get("duration"))
-        if height in seen_heights or (duration and duration > YOUTUBE_RELAY_MAX_DURATION):
-            continue
-        seen_heights.add(height)
-        video_size = safe_int(item.get("filesize"))
-        estimated_size = video_size if item.get("hasAudio") is True else (video_size + (audio_size or 0) if video_size else None)
-        ticket = encode_ticket({
-            "url": source_url,
-            "height": height,
-            "exp": int(time.time()) + YOUTUBE_RELAY_TICKET_TTL,
-            "nonce": secrets.token_urlsafe(8),
-        })
-        output.append({
-            **item,
-            "url": f"{request.url_root.rstrip('/')}/download?ticket={ticket}",
-            "label": f"{height}p · MP4 · 소리 있음",
-            "quality": f"{height}p",
-            "format": "MP4",
-            "height": height,
-            "filesize": estimated_size,
-            "filesizeApprox": True,
-            "hasAudio": True,
-            "audioCodec": item.get("audioCodec") or "AAC",
-            "delivery": "resolver",
-        })
-    return output
-
-
 class MetadataParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -555,110 +496,13 @@ def authorized() -> bool:
 def secure_headers(response):  # noqa: ANN001
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Resolver-Mode"] = "hybrid-youtube-relay"
+    response.headers["X-Resolver-Mode"] = "direct-metadata-only"
     return response
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "mode": "hybrid-youtube-relay", "youtubeMaxHeight": YOUTUBE_RELAY_MAX_HEIGHT})
-
-
-@app.get("/download")
-def download_youtube():
-    payload = decode_ticket(str(request.args.get("ticket") or ""))
-    if not payload:
-        return jsonify({"message": "download link expired or invalid"}), 401
-
-    source_url = str(payload.get("url") or "")
-    height = min(safe_int(payload.get("height")) or 360, YOUTUBE_RELAY_MAX_HEIGHT)
-    if platform_for_url(source_url) != "youtube":
-        return jsonify({"message": "unsupported download source"}), 400
-    if not relay_lock.acquire(blocking=False):
-        return jsonify({"message": "another YouTube download is running; retry shortly"}), 429
-
-    output_path = ""
-    try:
-        descriptor, output_path = tempfile.mkstemp(prefix="clipchak-youtube-", suffix=".mp4")
-        os.close(descriptor)
-        os.unlink(output_path)
-        format_selector = (
-            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
-            f"best[height<={height}][ext=mp4]/best[height<={height}]"
-        )
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "yt_dlp",
-                "--quiet",
-                "--no-warnings",
-                "--no-playlist",
-                "--socket-timeout",
-                "12",
-                "--extractor-retries",
-                "1",
-                "--retries",
-                "1",
-                "--fragment-retries",
-                "1",
-                "--js-runtimes",
-                "node",
-                "--max-filesize",
-                "150M",
-                "--merge-output-format",
-                "mp4",
-                "--format",
-                format_selector,
-                "--output",
-                output_path,
-                source_url,
-            ],
-            capture_output=True,
-            check=False,
-            timeout=240,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        )
-        if completed.returncode != 0 or not os.path.isfile(output_path):
-            detail = " ".join((completed.stderr or "").split())[-800:]
-            print(f"youtube relay failed ({completed.returncode}): {detail or 'no output'}", file=sys.stderr, flush=True)
-            if output_path and os.path.exists(output_path):
-                os.unlink(output_path)
-            relay_lock.release()
-            return jsonify({"message": "YouTube download could not be prepared"}), 502
-        if os.path.getsize(output_path) > YOUTUBE_RELAY_MAX_FILESIZE:
-            os.unlink(output_path)
-            relay_lock.release()
-            return jsonify({"message": "video exceeds the 150MB relay limit"}), 413
-
-        response = send_file(
-            output_path,
-            as_attachment=True,
-            download_name=f"clipchak-youtube-{height}p.mp4",
-            mimetype="video/mp4",
-            conditional=False,
-            max_age=0,
-        )
-
-        @response.call_on_close
-        def cleanup_download() -> None:
-            try:
-                if os.path.exists(output_path):
-                    os.unlink(output_path)
-            finally:
-                relay_lock.release()
-
-        return response
-    except subprocess.TimeoutExpired:
-        if output_path and os.path.exists(output_path):
-            os.unlink(output_path)
-        relay_lock.release()
-        return jsonify({"message": "YouTube download preparation timed out"}), 504
-    except OSError:
-        if output_path and os.path.exists(output_path):
-            os.unlink(output_path)
-        relay_lock.release()
-        return jsonify({"message": "download service unavailable"}), 503
+    return jsonify({"ok": True, "mode": "direct-metadata-only", "platforms": sorted(set(ALLOWED_DOMAINS.values()))})
 
 
 @app.post("/")
@@ -679,15 +523,13 @@ def resolve():
     title: str | None = None
     items: list[dict[str, object]] = []
     extractor_error: str | None = None
-    if platform in {"instagram", "tiktok", "threads"}:
+    if platform in GALLERY_PLATFORMS:
         items = gallery_items(source_url)
     if not items:
         title, items, extractor_error = yt_dlp_result(source_url)
     if not items:
         metadata_title, items = metadata_items(source_url)
         title = title or metadata_title
-    if items and platform == "youtube":
-        items = youtube_relay_items(source_url, items)
     if not items:
         status = 422 if extractor_error in {"upstream_verification_required", "upstream_auth_required"} else 404
         return jsonify({
