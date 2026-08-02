@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { LandingPage } from "../components/LandingPage";
-import { getPlatform, platforms } from "../lib/platforms";
+import { getPlatform, platformPages } from "../lib/platforms";
 
 type Props = { params: Promise<{ platform: string }> };
 
-export function generateStaticParams() { return platforms.map((platform) => ({ platform: platform.slug })); }
+export function generateStaticParams() { return platformPages.map((platform) => ({ platform: platform.slug })); }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { platform: slug } = await params;
@@ -13,8 +13,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!platform) return {};
   return {
     title: platform.title,
-    description: `${platform.description} 공개 콘텐츠와 권한 있는 영상만 이용하세요.`,
-    keywords: [`${platform.name} 영상 다운로드`, `${platform.name} 동영상 저장`, `${platform.name} 링크 다운로드`, "온라인 영상 다운로드"],
+    description: `${platform.description} 본인이 소유했거나 저장 허가를 받은 공개 콘텐츠만 이용하세요.`,
+    keywords: [...platform.keywords, `${platform.name} 링크 다운로드`, "온라인 미디어 다운로드"],
     alternates: { canonical: `/${platform.slug}` },
     openGraph: { type: "website", locale: "ko_KR", title: `${platform.title} | 클립착`, description: platform.description, url: `/${platform.slug}`, images: ["/og.png"] },
   };

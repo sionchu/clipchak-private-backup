@@ -3,7 +3,15 @@
 import { FormEvent, useMemo, useState } from "react";
 import { detectPlatform, getPlatform, type Platform } from "../lib/platforms";
 
-type MediaItem = { url: string; label: string; format?: string; quality?: string };
+type MediaItem = {
+  url: string;
+  label: string;
+  format?: string;
+  quality?: string;
+  kind?: "video" | "image" | "audio";
+  thumbnail?: string;
+  delivery?: "direct" | "resolver";
+};
 type ResolveResult = { platform?: string; title?: string; message?: string; items?: MediaItem[]; direct?: boolean };
 
 export function Downloader({ selected }: { selected?: Platform }) {
@@ -27,7 +35,7 @@ export function Downloader({ selected }: { selected?: Platform }) {
     setMessage("");
     setResult(null);
     let parsed: URL;
-    try { parsed = new URL(url.trim()); } catch { setMessage("https://로 시작하는 올바른 영상 주소를 입력해 주세요."); return; }
+    try { parsed = new URL(url.trim()); } catch { setMessage("https://로 시작하는 올바른 게시물 주소를 입력해 주세요."); return; }
     if (!/^https?:$/.test(parsed.protocol)) { setMessage("웹 주소만 확인할 수 있습니다."); return; }
     setLoading(true);
     try {
@@ -44,16 +52,27 @@ export function Downloader({ selected }: { selected?: Platform }) {
   return <div className="download-console">
     <div className="console-top"><span>URL INPUT</span><span className="status-dot"><i /> 공개 링크만</span></div>
     <form onSubmit={submit}>
-      <label htmlFor="video-url">영상 또는 게시물 주소</label>
-      <div className="url-field"><input id="video-url" type="url" inputMode="url" autoComplete="off" value={url} onChange={(event) => setUrl(event.target.value)} placeholder={selected?.placeholder || "유튜브·틱톡·스레드·링크드인 URL 붙여넣기"} /><button type="button" className="paste-button" onClick={paste}>붙여넣기</button></div>
+      <label htmlFor="media-url">영상·사진 게시물 주소</label>
+      <div className="url-field"><input id="media-url" type="url" inputMode="url" autoComplete="off" value={url} onChange={(event) => setUrl(event.target.value)} placeholder={selected?.placeholder || "유튜브·틱톡·스레드·링크드인·인스타 URL 붙여넣기"} /><button type="button" className="paste-button" onClick={paste}>붙여넣기</button></div>
       <div className="detected-row"><span>{current ? <><b className={`mini-platform ${current.accent}`}>{current.short}</b>{current.name} 링크 {detected ? "인식됨" : "선택"}</> : "주소를 붙여넣으면 플랫폼을 자동으로 찾습니다."}</span><small>비공개·로그인 링크 제외</small></div>
-      <button className="analyze-button" type="submit" disabled={loading || !url.trim()}>{loading ? "링크 확인 중…" : "영상 링크 확인"}<b aria-hidden="true">↗</b></button>
+      <button className="analyze-button" type="submit" disabled={loading || !url.trim()}>{loading ? "링크 확인 중…" : "영상·사진 링크 확인"}<b aria-hidden="true">↗</b></button>
       <p className="rights-note">계속하면 본인이 소유했거나 저장 허가를 받은 공개 콘텐츠임을 확인합니다.</p>
     </form>
     {message && <p className="console-message error" role="alert">{message}</p>}
     {result && <div className={`resolve-result ${result.items?.length ? "ready" : "pending"}`} aria-live="polite">
-      <span>{result.items?.length ? "저장 옵션" : "링크 확인 완료"}</span><h3>{result.title || `${current?.name || "영상"} 공개 링크`}</h3><p>{result.message}</p>
-      {!!result.items?.length && <div className="media-options">{result.items.map((item) => <a href={item.url} target="_blank" rel="noreferrer" key={`${item.url}-${item.label}`}>{item.label}<small>{[item.quality, item.format].filter(Boolean).join(" · ")}</small><b>저장 ↘</b></a>)}</div>}
+      <span>{result.items?.length ? "저장 옵션" : "링크 확인 완료"}</span><h3>{result.title || `${current?.name || "미디어"} 공개 링크`}</h3><p>{result.message}</p>
+      {!!result.items?.length && <>
+        <p className="delivery-note">원본 링크는 클립착 서버를 거치지 않고 이 브라우저에서 직접 열립니다. 새 화면이 열리면 기기의 저장 메뉴를 이용하세요.</p>
+        <div className="media-options">{result.items.map((item, index) => {
+          const kind = item.kind || "video";
+          const preview = item.thumbnail || (kind === "image" ? item.url : undefined);
+          return <a href={item.url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" key={`${item.url}-${item.label}-${index}`}>
+            {preview && <img src={preview} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+            <span><i className={`media-kind ${kind}`}>{kind === "image" ? "사진" : kind === "audio" ? "음원" : "영상"}</i>{item.label}</span>
+            <small>{[item.quality, item.format, item.delivery === "resolver" ? "외부 처리 서버" : "원본 직접 연결"].filter(Boolean).join(" · ")}</small><b>열어 저장 ↗</b>
+          </a>;
+        })}</div>
+      </>}
     </div>}
   </div>;
 }

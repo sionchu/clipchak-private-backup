@@ -12,7 +12,7 @@ test("renders the ClipChak landing page", async () => {
   const response = await render();
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /영상 주소 하나면/);
+  assert.match(html, /영상도 사진도/);
   assert.match(html, /유튜브/);
   assert.match(html, /스레드/);
   assert.match(html, /링크드인/);
@@ -20,10 +20,10 @@ test("renders the ClipChak landing page", async () => {
 });
 
 test("renders every platform SEO page", async () => {
-  for (const path of ["/youtube-video-download", "/tiktok-video-download", "/threads-video-download", "/linkedin-video-download", "/instagram-video-download"]) {
+  for (const path of ["/youtube-video-download", "/tiktok-video-download", "/threads-video-download", "/linkedin-video-download", "/instagram-video-download", "/tiktok-photo-download", "/threads-photo-download", "/linkedin-image-download", "/instagram-photo-download"]) {
     const response = await render(path);
     assert.equal(response.status, 200, path);
-    assert.match(await response.text(), /영상 링크 확인|영상 다운로드|릴스·영상 다운로드/);
+    assert.match(await response.text(), /영상|사진|이미지|릴스/);
   }
 });
 
@@ -33,4 +33,5 @@ test("publishes crawl metadata", async () => {
   const xml = await sitemap.text();
   assert.match(xml, /youtube-video-download/);
   assert.match(xml, /threads-video-download/);
+  assert.match(xml, /instagram-photo-download/);
 });
