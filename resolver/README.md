@@ -5,6 +5,7 @@
 ## 특징
 
 - 운영 검증을 통과한 8개 플랫폼 키와 허용 도메인 화이트리스트
+- Threads 브라우저 요청 + 구조화된 `video_versions`/캐러셀 판별
 - yt-dlp + gallery-dl + Open Graph 순차 분석
 - Bearer 인증과 메모리 기반 요청 제한
 - 최대 30개 결과, 짧은 프로세스 타임아웃

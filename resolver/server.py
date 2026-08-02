@@ -15,6 +15,7 @@ from urllib.parse import unquote, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from flask import Flask, jsonify, request
+from curl_cffi import requests as browser_requests
 
 
 app = Flask(__name__)
@@ -88,12 +89,32 @@ def extension_of(value: str) -> str:
 
 def media_kind(value: str, default: str = "video") -> str:
     parsed = urlparse(value)
-    query = parsed.query.lower()
-    path = parsed.path.lower()
-    if "mime_type=video" in query or "/video/" in path:
+    query = unquote(parsed.query).lower()
+    path = unquote(parsed.path).lower()
+    if any(marker in query for marker in (
+        "mime_type=video",
+        "mime=video",
+        "content_type=video",
+        "content-type=video",
+        "type=video",
+    )) or "/video/" in path:
         return "video"
-    if "mime_type=audio" in query or "/audio/" in path:
+    if any(marker in query for marker in (
+        "mime_type=audio",
+        "mime=audio",
+        "content_type=audio",
+        "content-type=audio",
+        "type=audio",
+    )) or "/audio/" in path:
         return "audio"
+    if any(marker in query for marker in (
+        "mime_type=image",
+        "mime=image",
+        "content_type=image",
+        "content-type=image",
+        "type=image",
+    )) or "/image/" in path:
+        return "image"
     extension = extension_of(value)
     if extension in IMAGE_EXTENSIONS:
         return "image"
@@ -420,6 +441,210 @@ class MetadataParser(HTMLParser):
             self.values.append((key, html.unescape(content).strip()))
 
 
+def metadata_document_items(source_url: str, document: str) -> tuple[str | None, list[dict[str, str]]]:
+    parser = MetadataParser()
+    parser.feed(document)
+    candidates = list(parser.values)
+
+    # A video post normally exposes og:image as its poster. Once a video URL is
+    # present, returning that poster as a second photo is misleading.
+    has_video = any("video" in key or "player:stream" in key for key, _ in candidates)
+    if has_video:
+        candidates = [
+            (key, value)
+            for key, value in candidates
+            if "video" in key or "player:stream" in key
+        ]
+
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for key, raw_value in candidates:
+        value = urljoin(source_url, raw_value)
+        if value in seen or not direct_result_url(value):
+            continue
+        kind = "video" if "video" in key or "player:stream" in key else "image"
+        seen.add(value)
+        items.append({
+            "url": value,
+            "label": f"{kind} {len(items) + 1}",
+            "kind": kind,
+            "format": extension_of(value).upper() or None,
+            "delivery": "direct",
+        })
+        if len(items) >= MAX_ITEMS:
+            break
+    return parser.title, items
+
+
+class ApplicationJsonParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.capture = False
+        self.parts: list[str] = []
+        self.documents: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "script":
+            return
+        attributes = {key.lower(): value for key, value in attrs if value}
+        if attributes.get("type", "").lower() == "application/json":
+            self.capture = True
+            self.parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self.capture:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "script" and self.capture:
+            self.documents.append("".join(self.parts))
+            self.capture = False
+            self.parts = []
+
+
+def threads_shortcode(source_url: str) -> str | None:
+    parts = [part for part in urlparse(source_url).path.split("/") if part]
+    for marker in ("post", "t"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index + 1 < len(parts):
+                return parts[index + 1]
+    return None
+
+
+def find_threads_media_node(value: object, shortcode: str, depth: int = 0) -> dict | None:
+    if depth > 80:
+        return None
+    if isinstance(value, dict):
+        if str(value.get("code") or "") == shortcode:
+            return value
+        for child in value.values():
+            result = find_threads_media_node(child, shortcode, depth + 1)
+            if result is not None:
+                return result
+    elif isinstance(value, list):
+        for child in value:
+            result = find_threads_media_node(child, shortcode, depth + 1)
+            if result is not None:
+                return result
+    return None
+
+
+def best_image_candidate(media: dict) -> dict | None:
+    versions = media.get("image_versions2")
+    candidates = versions.get("candidates") if isinstance(versions, dict) else None
+    if not isinstance(candidates, list):
+        return None
+    valid = [item for item in candidates if isinstance(item, dict) and isinstance(item.get("url"), str)]
+    if not valid:
+        return None
+    return max(valid, key=lambda item: (safe_int(item.get("width")) or 0) * (safe_int(item.get("height")) or 0))
+
+
+def threads_media_items(media: dict) -> list[dict[str, object]]:
+    carousel = media.get("carousel_media")
+    nodes = [item for item in carousel if isinstance(item, dict)] if isinstance(carousel, list) and carousel else [media]
+    items: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for node in nodes[:MAX_ITEMS]:
+        versions = node.get("video_versions")
+        video_url = next((
+            item.get("url")
+            for item in versions
+            if isinstance(item, dict)
+            and isinstance(item.get("url"), str)
+            and direct_result_url(item["url"])
+        ), None) if isinstance(versions, list) else None
+        if isinstance(video_url, str) and video_url not in seen:
+            seen.add(video_url)
+            width = safe_int(node.get("original_width"))
+            height = safe_int(node.get("original_height"))
+            has_audio = bool(node.get("has_audio"))
+            items.append({
+                "url": video_url,
+                "label": f"영상 {len(items) + 1}",
+                "kind": "video",
+                "format": extension_of(video_url).upper() or "MP4",
+                "width": width,
+                "height": height,
+                "hasAudio": has_audio,
+                "delivery": "direct",
+            })
+            continue
+
+        image = best_image_candidate(node)
+        image_url = image.get("url") if image else None
+        if isinstance(image_url, str) and image_url not in seen and direct_result_url(image_url):
+            seen.add(image_url)
+            items.append({
+                "url": image_url,
+                "label": f"사진 {len(items) + 1}",
+                "kind": "image",
+                "format": extension_of(image_url).upper() or "JPG",
+                "width": safe_int(image.get("width")),
+                "height": safe_int(image.get("height")),
+                "delivery": "direct",
+            })
+    return items
+
+
+def threads_document_items(source_url: str, document: str) -> tuple[str | None, list[dict[str, object]]]:
+    shortcode = threads_shortcode(source_url)
+    if not shortcode:
+        return None, []
+
+    metadata_title, _ = metadata_document_items(source_url, document)
+    parser = ApplicationJsonParser()
+    parser.feed(document)
+    for raw_document in parser.documents:
+        try:
+            parsed = json.loads(raw_document)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        media = find_threads_media_node(parsed, shortcode)
+        if media is not None:
+            return metadata_title, threads_media_items(media)
+    return metadata_title, []
+
+
+def browser_threads_items(source_url: str) -> tuple[str | None, list[dict[str, object]]]:
+    try:
+        response = browser_requests.get(
+            source_url,
+            impersonate="chrome",
+            allow_redirects=True,
+            timeout=12,
+        )
+    except Exception:  # curl-cffi exposes backend-specific transport errors
+        return None, []
+    if response.status_code != 200 or platform_for_url(str(response.url)) != "threads":
+        return None, []
+    if len(response.content) > 2_000_000:
+        return None, []
+    return threads_document_items(source_url, response.text)
+
+
+def threads_result(source_url: str) -> tuple[str | None, list[dict[str, object]], str | None]:
+    """Resolve Threads without accepting a poster image as the final video result."""
+    browser_title, browser_items = browser_threads_items(source_url)
+    if browser_items:
+        return browser_title, browser_items, None
+
+    metadata_title, metadata = metadata_items(source_url)
+    metadata_videos = [item for item in metadata if item.get("kind") == "video"]
+    if metadata_videos:
+        return metadata_title, metadata_videos, None
+
+    title, extracted, extractor_error = yt_dlp_result(source_url)
+    if extracted:
+        return title or metadata_title, extracted, None
+
+    gallery = gallery_items(source_url)
+    if gallery:
+        return title or metadata_title, gallery, extractor_error
+    return title or metadata_title, metadata, extractor_error
+
+
 class SafeRedirectHandler(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
         if not platform_for_url(newurl):
@@ -443,26 +668,7 @@ def metadata_items(source_url: str) -> tuple[str | None, list[dict[str, str]]]:
     except (HTTPError, URLError, TimeoutError, ValueError):
         return None, []
 
-    parser = MetadataParser()
-    parser.feed(document)
-    items: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for key, raw_value in parser.values:
-        value = urljoin(source_url, raw_value)
-        if value in seen or not direct_result_url(value):
-            continue
-        kind = "video" if "video" in key or "player:stream" in key else "image"
-        seen.add(value)
-        items.append({
-            "url": value,
-            "label": f"{'영상' if kind == 'video' else '사진'} {len(items) + 1}",
-            "kind": kind,
-            "format": extension_of(value).upper() or None,
-            "delivery": "direct",
-        })
-        if len(items) >= MAX_ITEMS:
-            break
-    return parser.title, items
+    return metadata_document_items(source_url, document)
 
 
 def rate_limit_available() -> bool:
@@ -515,11 +721,13 @@ def resolve():
     title: str | None = None
     items: list[dict[str, object]] = []
     extractor_error: str | None = None
-    if platform in GALLERY_PLATFORMS:
+    if platform == "threads":
+        title, items, extractor_error = threads_result(source_url)
+    elif platform in GALLERY_PLATFORMS:
         items = gallery_items(source_url)
-    if not items:
+    if platform != "threads" and not items:
         title, items, extractor_error = yt_dlp_result(source_url)
-    if not items:
+    if platform != "threads" and not items:
         metadata_title, items = metadata_items(source_url)
         title = title or metadata_title
     if not items:
